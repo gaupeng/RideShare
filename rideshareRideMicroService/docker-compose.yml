@@ -1,0 +1,28 @@
+version: '3' 
+services:
+  ride_web:
+    container_name: rides
+    build: .
+    image: rides:latest
+    command: python3 __init__.py
+    restart: always
+    ports:
+      - "80:80"
+    environment:
+      - TEAM_NAME=CC_0088_0144_0667_1103
+    links:
+      - ride_db
+    depends_on:
+      - ride_db
+  ride_db:
+    image: postgres
+    container_name: rides_database
+    ports:
+      - "5455:5455"
+    environment:
+      - POSTGRES_USER=ubuntu
+      - POSTGRES_PASSWORD=ride
+    expose:
+      - "5455"
+    command: -p 5455
+
