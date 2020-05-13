@@ -20,10 +20,14 @@ from kazoo.client import KazooClient
 zk = KazooClient(hosts='zoo:2181')
 zk.start()
 
+# ------------------------------------------------------------------------------------
+
 # Get environment variables specific to worker
 workerType = os.environ['TYPE']
 dbName = os.environ['DBNAME']
 workerStatus = os.environ['CREATED']
+
+# ------------------------------------------------------------------------------------
 
 # Initialise db connection
 dbURI = doInit(dbName)
@@ -31,6 +35,8 @@ engine = create_engine(dbURI)
 Session = sessionmaker(bind=engine)
 Base.metadata.create_all(engine)
 session = Session()
+
+# ------------------------------------------------------------------------------------
 
 # Connect to RMQ container
 connection = pika.BlockingConnection(
@@ -65,7 +71,7 @@ def slaveWatch(event):
 
 def getSlavesCount():
     '''
-    Get count on number of slaves.
+    Get count of slaves.
     '''
     print("--> In getSlavesCount <--")
     pass_url = "http://worker_orchestrator_1:80/api/v1/zoo/count"
@@ -74,9 +80,11 @@ def getSlavesCount():
     resp = json.loads(resp)
     return resp
 
-
+#initialize master mode
 if workerType == "master":
     zk.create('/root/master', b'master', ephemeral=True)
+
+#initialize slave nodes
 else:
     name = str(getSlavesCount())
     print("Z-Node is:", name)
@@ -139,6 +147,7 @@ def writeDB(req):
             else:
                 responseToReturn.status_code = 400
             return (responseToReturn.text, responseToReturn.status_code)
+        
         # Remove an existing User
         elif data["caller"] == "removeUser":
             session.query(User).filter_by(username=data["username"]).delete()
@@ -165,7 +174,7 @@ def writeDB(req):
                 responseToReturn.status_code = 400
             return (responseToReturn.text, responseToReturn.status_code)
 
-        # join ride
+        # Join ride
         elif data["caller"] == "joinRide":
             rideExists = session.query(Ride).filter_by(
                 ride_id=data["rideId"]).first()
@@ -178,7 +187,7 @@ def writeDB(req):
             responseToReturn.status_code = 200
             return (responseToReturn.text, responseToReturn.status_code)
 
-        # delete ride
+        # Delete ride
         elif data["caller"] == "deleteRide":
             session.query(Ride).filter_by(ride_id=data["rideId"]).delete()
             session.commit()
@@ -198,14 +207,11 @@ def writeWrapMaster(ch, method, props, body):
     '''
     body = json.dumps(eval(body.decode()))
     writeDB(body)
+    #publish the write request to the sync Queue so slaves can update DB
     channel.basic_publish(exchange='syncQ', routing_key='', body=body, properties=pika.BasicProperties(
         reply_to=props.reply_to,
         correlation_id=props.correlation_id,
         delivery_mode=2))
-    # Ideally we want to comment out below and get respsonse at orch from slave
-    # ch.basic_publish(exchange='', routing_key=props.reply_to, properties=pika.BasicProperties(
-    #     correlation_id=props.correlation_id), body=str(writeResponse))
-    # ch.basic_ack(delivery_tag=method.delivery_tag)
 
 
 # Consume from writeQ for Master
@@ -219,10 +225,13 @@ if workerType == 'master':
 
 # -----------------------------------------------------------------------------------
 
-# Slave Code
+# Slave Functionality
 
-
+#wrapper to write to slave DB
 def writeWrapSlave(ch, method, props, body):
+    '''
+    Called on consumption from sync queue
+    '''
     print("--> In writeWrapSlave <--")
     body = json.dumps(eval(body.decode()))
     writeResponse = writeDB(body)
@@ -251,6 +260,7 @@ def readDB(req):
     data = json.loads(req)
 
     if data["table"] == "User":
+        
         # check user exists
         checkUserSet = {"removeUser", "createRide"}
         if data["caller"] in checkUserSet:
@@ -361,6 +371,9 @@ def readDB(req):
 
 # Wrapper for read
 def readWrap(ch, method, props, body):
+    '''
+    Called when read Queue is consumed by the slave
+    '''
     print("--> In readWrap <--")
     body = json.dumps(eval(body.decode()))
     readResponse = readDB(body)
@@ -392,6 +405,9 @@ def actualSync(users_rides):
 
 
 def syncDB(mdbName):
+    '''
+    gets the master db data from the orchestrator and calls a function to update its own DB
+    '''
     print("--> In syncDB <--")
     pass_url = "http://worker_orchestrator_1:80/api/v1/db/sync"
     r = requests.get(url=pass_url)
@@ -399,6 +415,9 @@ def syncDB(mdbName):
     resp = json.loads(resp)
     actualSync(resp)
 
+# -----------------------------------------------------------------------------------
+
+#Slave Code
 
 # Consume from readQ for Slave
 if workerType == 'slave':
@@ -410,12 +429,16 @@ if workerType == 'slave':
 
     channel.queue_declare(queue='readQ', durable=True)
     channel.queue_declare(queue='responseQ', durable=True)
+
+    #round robin consumption
     channel.basic_qos(prefetch_count=1)
 
     # Sync database with master
     channel.exchange_declare(exchange='syncQ', exchange_type='fanout')
     result = channel.queue_declare(queue='', exclusive=True, durable='True')
     queue_name = result.method.queue
+    
+    #Consume syncQ and update DB
     channel.basic_consume(
         queue=queue_name, on_message_callback=writeWrapSlave, auto_ack=True)
     channel.queue_bind(exchange='syncQ', queue=queue_name)
