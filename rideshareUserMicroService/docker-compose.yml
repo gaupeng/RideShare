@@ -1,0 +1,28 @@
+version: '3' 
+services:
+  user_web:
+    container_name: users
+    build: .
+    image: users:latest
+    command: python3 -u __init__.py
+    restart: always
+    ports:
+      - "80:80"
+    environment:
+      - TEAM_NAME=CC_0088_0144_0667_1103
+    links:
+      - user_db
+    depends_on:
+      - user_db
+  user_db:
+    image: postgres
+    container_name: users_database
+    ports:
+      - "5454:5454"
+    environment:
+      - POSTGRES_USER=ubuntu
+      - POSTGRES_PASSWORD=ride
+    expose:
+      - "5454"
+    command: -p 5454
+
