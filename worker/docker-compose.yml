@@ -1,0 +1,63 @@
+version: '3.1' 
+services:
+  zoo:
+    image: zookeeper
+    restart: on-failure
+    hostname: zoo
+    ports:
+      - 2181:2181
+    environment:
+      ZOO_MY_ID: 1
+      ZOO_SERVERS: server.1=0.0.0.0:2888:3888;2181
+    # expose:
+    #   - "2181"
+
+  rmq:
+    image: rabbitmq:3.8.3-alpine
+    container_name: rmq
+    ports:
+      - 5672:5672
+      - 15672:15672
+
+  postgres_worker:
+    image: postgres
+    container_name: postgres_worker
+    ports:
+      - "5432"
+    environment:
+      - POSTGRES_USER=ubuntu
+      - POSTGRES_PASSWORD=ride
+    expose:
+      - "5432"
+    command: -p 5432
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: sh -c "sleep 20 && python -u worker.py"
+    environment:
+      - TYPE=master
+      - DBNAME=postgres_worker
+      - CREATED=NA
+    volumes:
+        - .:/tmp
+    depends_on:
+    - rmq
+    - postgres_worker
+    restart: on-failure
+
+  orchestrator:
+    build:
+        context: .
+        dockerfile: Dockerfile
+    command: sh -c "sleep 15 && python -u orchestrator.py"
+    volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - /usr/bin/docker:/usr/bin/docker
+        - .:/tmp
+    ports:
+      - 80:80
+    expose:
+        - "80"
+    restart: on-failure    

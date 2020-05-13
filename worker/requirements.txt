@@ -1,0 +1,10 @@
+docker
+docker-compose
+docker-pycreds
+dockerpty
+Flask
+kazoo
+pika
+requests
+sqlalchemy
+ipython
