@@ -28,6 +28,7 @@ children = zk.get_children('/root', watch=slaves_watch)
 # Create Flask app
 app = Flask(__name__)
 
+#Initialize Dockers
 dockEnv = docker.from_env()
 dockClient = docker.DockerClient()
 
@@ -84,6 +85,10 @@ def createNewSlave():
 
 
 def slaves_watch(event):
+    '''
+    Watch Function that spawns a new slave when a slave crashes 
+    Also elects the slave with min pid when master crashes
+    '''
     # increment slave count
     incSlavesCount()
 
@@ -93,6 +98,8 @@ def slaves_watch(event):
     global respawn
     flag = True
     children = zk.get_children('/root', watch=slaves_watch)
+    
+    #checking if master or slave has crashed
     for child in children:
         data, stat = zk.get('/root/'+str(child))
         data = data.decode("utf-8")
@@ -100,16 +107,22 @@ def slaves_watch(event):
         if(data == "master"):
             flag = False
             break
+    
+    #if master has crashed
     if(flag):
         print(children)
         children = list(map(int, children))
         minimum = min(children)
         print(minimum)
 
+        #elect minimum pid slave as master
         zk.set("/root/"+str(minimum), b"master")
         master = "worker_worker_" + str(minimum)
 
+        #create new slave to replace newly elected master
         createNewSlave()
+    
+    #if slave has crashed
     else:
         print(children)
         if(respawn):
@@ -119,11 +132,14 @@ def slaves_watch(event):
             else:
                 print("IM ELSE-ELSE")
                 noOfChildren = len(children)
-    print("no of children and len(children) respawn",
+    print("no of children, len(children), respawn, master flag",
           noOfChildren, len(children), respawn, flag)
 
 
 class readWriteReq:
+    '''
+    Class that defines the read and Write Queues as well as the Response Q
+    '''
     def __init__(self, publishQueue):
         self.publishQ = publishQueue
         self.connection = pika.BlockingConnection(
@@ -164,6 +180,9 @@ class readWriteReq:
 
 
 def getReadCount():
+    '''
+    Gets the count of Read Requests from file
+    '''
     fh = open("readCount", "r")
     count = int(fh.readline())
     fh.close()
@@ -172,6 +191,9 @@ def getReadCount():
 
 
 def incCount():
+    '''
+    Increments the Read Request Count by 1 and stores it in the file
+    '''
     fh = open("readCount", "r+")
     count = int(fh.read())
     fh.seek(0)
@@ -184,12 +206,17 @@ def incCount():
 
 @app.route('/api/v1/db/read', methods=["POST"])
 def readDB():
+    '''
+    API publishes a read request to the read Queue
+    '''
     response = None
     count = getReadCount()
     incCount()
+    #Starts timer on the first read request
     if not count:
         print("Starting Timer")
         Timer(120, spawnWorker).start()
+
     if request.method == "POST":
         data = request.get_json()
         data = json.dumps(data)
@@ -205,6 +232,9 @@ def readDB():
 
 @app.route('/api/v1/db/write', methods=["POST"])
 def writeDB():
+    '''
+    API Publishes a write request to the write Queue
+    '''
     response = None
     if request.method == "POST":
         data = request.get_json()
@@ -220,6 +250,9 @@ def writeDB():
 
 @app.route('/api/v1/db/clear', methods=["POST"])
 def clearDB():
+    '''
+    API publishes a clear database request to the write Queue 
+    '''
     response = None
     if request.method == "POST":
         data = {"table": "both", "caller": "clearData"}
@@ -260,8 +293,10 @@ def spawnWorker():
         if(image.attrs['Config']['Image'] not in ['zookeeper', 'python', 'postgres', 'rabbitmq:3.8.3-alpine', 'worker_orchestrator']):
             newContList.append(image)
 
+    #Number of actual workers, including master
     numContainers = len(newContList)
 
+    #removing master from list
     for contInd in range(numContainers):
         if newContList[contInd].name == "worker_worker_1":
             newContList.pop(contInd)
@@ -272,9 +307,11 @@ def spawnWorker():
     for cont in newContList:
         print(cont.name)
 
+    #if there are more containers than required remove extra slaves
     if numContainers > workers:
         extra = numContainers - workers
         respawn = False
+        #while the actual number of workers not equal to required workers
         while extra:
             print("Removing worker")
             contToRem = newContList[-1]
@@ -285,11 +322,15 @@ def spawnWorker():
             numContainers -= 1
             extra -= 1
 
+    #if there are less containers than required then add more slaves
     elif numContainers < workers:
         extra = workers - numContainers
+        #while the actual number of workers not equal to required workers
         while extra:
             print("Adding worker")
             print("Container name is :", getSlavesCount())
+            
+            #creating a postgres container
             slaveDb = dockEnv.containers.run(
                 "postgres",
                 "-p 5432",
@@ -303,6 +344,7 @@ def spawnWorker():
             slaveCon = dockEnv.containers.get(slaveDb.name)
             dbHostName = slaveCon.attrs["Config"]['Hostname']
 
+            #creating the actual slave
             newCon = dockEnv.containers.run("worker_worker:latest",
                                             'sh -c "sleep 20 && python3 -u worker.py"',
                                             links={"rmq": "rmq"},
@@ -313,11 +355,15 @@ def spawnWorker():
             numContainers += 1
             extra -= 1
 
+    #checking again after two minutes
     Timer(120, spawnWorker).start()
 
 
 @app.route('/api/v1/zoo/count', methods=["GET"])
 def getSCount():
+    '''
+    API that counts the number of slaves (needed for Zookeeper)
+    '''
     fh = open("slavesCount", "r")
     count = int(fh.readline())
     fh.close()
@@ -327,6 +373,9 @@ def getSCount():
 
 @app.route('/api/v1/db/sync', methods=["GET"])
 def syncDB():
+    '''
+    API that reads the master DB and sends the data to a new slave to sync it's new database
+    '''
     print("--> In syncDB <--")
     mdbURI = doInit("postgres_worker")
     mengine = create_engine(mdbURI)
@@ -349,16 +398,20 @@ def syncDB():
 
 @app.route('/api/v1/crash/master', methods=["POST"])
 def killMaster():
+    '''
+    API to intentionally crash the master
+    '''
     global respawn
     respawn = True
     if request.method == "POST":
         containerList = dockEnv.containers.list(all)
-        # dictionary of containers and the pids, cause we have to kill slave with highest pid
+        
+        # dictionary of containers and the pids, cause we have to kill worker with lowest pid
         cntrdict = dict()
         for image in containerList:
             if(image.attrs['Config']['Image'] not in ['zookeeper', 'python', 'postgres', 'rabbitmq:3.8.3-alpine', 'worker_orchestrator']):
-                # if('slave' not in image['Config']['Image'])
                 cntrdict[image] = image.attrs['State']['Pid']
+        
         # gets the key of the min value. i.e. gets the container id of the lowest pid container
         mincid = list(cntrdict.keys())[
             list(cntrdict.values()).index(min(list(cntrdict.values())))]
@@ -368,18 +421,22 @@ def killMaster():
     return {}, 405
 
 
-# im assuming we get a list of containers,  i've added sample-getcontainerpid.py for reference if this is not the case, to get the list of just slave containers we'll need zookeeper idk how to do that
 @app.route('/api/v1/crash/slave', methods=["POST"])
 def killSlave():
+    '''
+    API to intentionally crash the slave
+    '''
     global respawn
     respawn = True
     if request.method == "POST":
         containerList = dockEnv.containers.list(all)
+        
         # dictionary of containers and the pids, cause we have to kill slave with highest pid
         cntrdict = dict()
         for image in containerList:
             if(image.attrs['Config']['Image'] not in ['zookeeper', 'python', 'postgres', 'rabbitmq:3.8.3-alpine', 'worker_orchestrator']):
                 cntrdict[image] = image.attrs['State']['Pid']
+
         # gets the key of the max value. i.e. gets the container id of the highest pid container
         maxcid = list(cntrdict.keys())[
             list(cntrdict.values()).index(max(list(cntrdict.values())))]
@@ -391,6 +448,9 @@ def killSlave():
 
 @app.route('/api/v1/worker/list', methods=["GET"])
 def getWorkers():
+    '''
+    API returns a sorted list of all the workers
+    '''
     if request.method == "GET":
         containerList = dockEnv.containers.list(all)  # list of containers
         pidlist = list()
@@ -403,7 +463,8 @@ def getWorkers():
 
 
 with app.app_context():
-    # create first slave
+
+    #Create first slave
     print("Creating first slave")
 
     slaveDb = dockEnv.containers.run(
