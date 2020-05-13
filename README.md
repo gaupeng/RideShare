@@ -1,7 +1,7 @@
 # RideShare
 Backend for a cloud based application **RideShare**, that can be used to pool people on rides. This project was done as a part of our University's course project under the subject of Cloud Computing.
 
-* This application is build using Flask, and was deployed on an EC2 Instance, through Amazon Web Services.
+* This application is built using Flask, and was deployed on an EC2 Instance, through Amazon Web Services.
 * Features covered by codebase include: <br>
     1. Database as a Service (DBaaS).
     2. High availability for both master, and slaves.
@@ -11,7 +11,7 @@ Backend for a cloud based application **RideShare**, that can be used to pool pe
     2. **Flask** - Our application ran on Flask. This included the rides microservice, the users microservice and the orchestrator.
     3. **PostgreSQL** - Our primary database used was PostgreSQL. Sometimes, we used files to keep track of counts persistently.
     4. **RabbitMQ** - RabbitMQ acted as our message-broker through the different components of the application.
-    5. **Apache ZooKeeper** - ZooKeeper was used to create and maintain working entites in the form of nodes.
+    5. **Apache ZooKeeper** - ZooKeeper was used to create and maintain working entities in the form of nodes.
     * Side note: We also had a load balancer that routed requests based on rules defined by us.
 * Application Flow:
     1. We had three instances running: <br>
@@ -28,7 +28,7 @@ Backend for a cloud based application **RideShare**, that can be used to pool pe
     9. Thus, any response, whether write or read, would at the end, be acknowledged at the orchestrator, when a slave confirms its actions.
 * Running The Code:
     * To run the code on any of the intances, simply do:
-    ```docker-compse build && docker-compose up```.
+    ```docker-compose build && docker-compose up```.
     * Requests were tested on Postman.
 
 * Team:
