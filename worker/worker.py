@@ -87,10 +87,15 @@ if workerType == "master":
 #initialize slave nodes
 else:
     name = str(getSlavesCount())
-    print("Z-Node is:", name)
-    zk.create('/root'+'/'+name, b'slave', ephemeral=True)
+    print("Z-Node is :",name)
+    zk.create('/root'+'/'+name,b'slave',ephemeral=True)
+    pass_url="http://worker_orchestrator_1:80/api/v1/zoo/flag"
+    r=requests.get(url=pass_url)
+    resp=r.text
+    resp=json.loads(resp)
     data, stat = zk.get("/root/"+name, watch=slaveWatch)
-    data = data.decode("utf-8")
+    data = data.decode("utf-8") 
+    print("data: %s" % (data))
 
 
 # ------------------------------------------------------------------------------------

@@ -18,12 +18,10 @@ from kazoo.client import KazooClient
 master = "worker_worker_1"
 respawn = True
 noOfChildren = 0
+lock = True
 
 # Connect to zoo
-zk = KazooClient(hosts='zoo:2181')
-zk.start()
-zk.create('/root', b'root')
-children = zk.get_children('/root', watch=slaves_watch)
+
 
 # Create Flask app
 app = Flask(__name__)
@@ -63,6 +61,7 @@ def createNewSlave():
     Create a new worker that acts as a slave.
     Create corresponding database.
     '''
+    incSlavesCount()
     slaveDb = dockEnv.containers.run(
         "postgres",
         "-p 5432",
@@ -76,21 +75,19 @@ def createNewSlave():
     dbHostName = slaveCon.attrs["Config"]['Hostname']
 
     newCon = dockEnv.containers.run("worker_worker:latest",
-                                    'sh -c "sleep 20 && python3 -u worker.py"',
-                                    links={"rmq": "rmq"},
-                                    environment={
-                                        "TYPE": "slave", "DBNAME": dbHostName, "CREATED": "NEW"},
-                                    network="worker_default",
-                                    detach=True)
-
+                           'sh -c "sleep 20 && python3 -u worker.py"',
+                           links={"rmq": "rmq"},
+                           environment={"TYPE": "slave", "DBNAME": dbHostName, "CREATED":"NEW"},
+                           network="worker_default",
+                           detach=True,name="worker_worker_"+str(getSlavesCount()))
 
 def slaves_watch(event):
     '''
     Watch Function that spawns a new slave when a slave crashes 
     Also elects the slave with min pid when master crashes
     '''
-    # increment slave count
-    incSlavesCount()
+    
+    
 
     print("--> In slaves_watch <--")
 
@@ -118,7 +115,7 @@ def slaves_watch(event):
         #elect minimum pid slave as master
         zk.set("/root/"+str(minimum), b"master")
         master = "worker_worker_" + str(minimum)
-
+        print("\n\nMaster is : "+master+"\n\n")
         #create new slave to replace newly elected master
         createNewSlave()
     
@@ -134,6 +131,11 @@ def slaves_watch(event):
                 noOfChildren = len(children)
     print("no of children, len(children), respawn, master flag",
           noOfChildren, len(children), respawn, flag)
+
+zk = KazooClient(hosts='zoo:2181')
+zk.start()
+zk.create('/root', b'root')
+children = zk.get_children('/root', watch=slaves_watch)
 
 
 class readWriteReq:
@@ -328,6 +330,8 @@ def spawnWorker():
         #while the actual number of workers not equal to required workers
         while extra:
             print("Adding worker")
+
+            incSlavesCount()
             print("Container name is :", getSlavesCount())
             
             #creating a postgres container
@@ -343,21 +347,37 @@ def spawnWorker():
 
             slaveCon = dockEnv.containers.get(slaveDb.name)
             dbHostName = slaveCon.attrs["Config"]['Hostname']
-
+            print(lock)
+            lock = True
+            print(lock)
             #creating the actual slave
             newCon = dockEnv.containers.run("worker_worker:latest",
-                                            'sh -c "sleep 20 && python3 -u worker.py"',
-                                            links={"rmq": "rmq"},
-                                            environment={
-                                                "TYPE": "slave", "DBNAME": dbHostName, "CREATED": "NEW"},
-                                            network="worker_default",
-                                            detach=True)
+                                   'sh -c "sleep 20 && python3 -u worker.py"',
+                                   links={"rmq": "rmq"},
+                                   environment={
+                                       "TYPE": "slave", "DBNAME": dbHostName, "CREATED":"NEW"},
+                                   network="worker_default",
+                                   detach=True,name="worker_worker_"+str(getSlavesCount()))
+            
+            while(lock):
+                pass
+
             numContainers += 1
             extra -= 1
 
     #checking again after two minutes
     Timer(120, spawnWorker).start()
 
+@app.route('/api/v1/zoo/flag',methods=["GET"])
+def setF():
+    global lock
+    if(lock):
+        print(lock)
+        lock = False
+    else:
+        print(lock)
+        lock = True
+    return json.dumps(1)
 
 @app.route('/api/v1/zoo/count', methods=["GET"])
 def getSCount():
@@ -402,21 +422,25 @@ def killMaster():
     API to intentionally crash the master
     '''
     global respawn
-    respawn = True
+    respawn = False
     if request.method == "POST":
-        containerList = dockEnv.containers.list(all)
+        # containerList = dockEnv.containers.list(all)
         
-        # dictionary of containers and the pids, cause we have to kill worker with lowest pid
-        cntrdict = dict()
-        for image in containerList:
-            if(image.attrs['Config']['Image'] not in ['zookeeper', 'python', 'postgres', 'rabbitmq:3.8.3-alpine', 'worker_orchestrator']):
-                cntrdict[image] = image.attrs['State']['Pid']
+        # # dictionary of containers and the pids, cause we have to kill worker with lowest pid
+        # cntrdict = dict()
+        # for image in containerList:
+        #     if(image.attrs['Config']['Image'] not in ['zookeeper', 'python', 'postgres', 'rabbitmq:3.8.3-alpine', 'worker_orchestrator']):
+        #         cntrdict[image] = image.attrs['State']['Pid']
         
-        # gets the key of the min value. i.e. gets the container id of the lowest pid container
-        mincid = list(cntrdict.keys())[
-            list(cntrdict.values()).index(min(list(cntrdict.values())))]
-        mincid.kill()
-        mincid.remove(v=True)
+        # # gets the key of the min value. i.e. gets the container id of the lowest pid container
+        # mincid = list(cntrdict.keys())[
+        #     list(cntrdict.values()).index(min(list(cntrdict.values())))]
+        # mincid.kill()
+        # mincid.remove(v=True)
+        container = dockEnv.containers.get(master)
+        print("Killing...",container.name)
+        container.kill()
+
         return {}, 200
     return {}, 405
 
@@ -481,12 +505,11 @@ with app.app_context():
     slaveCon = dockEnv.containers.get(slaveDb.name)
     dbHostName = slaveCon.attrs["Config"]['Hostname']
     slave = dockEnv.containers.run("worker_worker:latest",
-                                   'sh -c "sleep 20 && python3 -u worker.py"',
-                                   links={"rmq": "rmq"},
-                                   environment={
-                                       "TYPE": "slave", "DBNAME": dbHostName, "CREATED": "NEW"},
-                                   network="worker_default",
-                                   detach=True)
+                           'sh -c "sleep 20 && python3 -u worker.py"',
+                           links={"rmq": "rmq"},
+                           environment={"TYPE": "slave", "DBNAME": dbHostName, "CREATED":"NEW"},
+                           network="worker_default",
+                           detach=True,name="worker_worker_2")
     print("Created Master/Slave")
 
     # Get all container names
